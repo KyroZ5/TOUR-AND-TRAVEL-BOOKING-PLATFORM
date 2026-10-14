@@ -1,0 +1,51 @@
+rules_version = '2';
+
+// Cloud Storage Security Rules - Tour and Travel Booking Platform
+// Public image reads; writes restricted to active admins with type/size checks.
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAdmin() {
+      return request.auth != null
+        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin'
+        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.accountStatus == 'active';
+    }
+
+    function isImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+
+    // Destination and package images
+    match /destinations/{destinationId}/{fileName} {
+      allow read: if true;
+      allow write: if isAdmin() && isImage() && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    match /packages/{packageId}/{fileName} {
+      allow read: if true;
+      allow write: if isAdmin() && isImage() && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    match /promotions/{promotionId}/{fileName} {
+      allow read: if true;
+      allow write: if isAdmin() && isImage() && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // Payment receipts - owner uploads, only images/PDF
+    match /receipts/{userId}/{fileName} {
+      allow read: if request.auth != null
+        && (request.auth.uid == userId || isAdmin());
+      allow write: if request.auth != null
+        && request.auth.uid == userId
+        && (request.resource.contentType.matches('image/.*')
+            || request.resource.contentType == 'application/pdf')
+        && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // Site assets (hero background, logo)
+    match /site/{fileName} {
+      allow read: if true;
+      allow write: if isAdmin() && isImage() && request.resource.size < 5 * 1024 * 1024;
+    }
+  }
+}

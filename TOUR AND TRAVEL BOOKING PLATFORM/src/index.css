@@ -1,0 +1,23 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Leaflet needs an explicit height on its container */
+.leaflet-container {
+  height: 100%;
+  width: 100%;
+  z-index: 0;
+}

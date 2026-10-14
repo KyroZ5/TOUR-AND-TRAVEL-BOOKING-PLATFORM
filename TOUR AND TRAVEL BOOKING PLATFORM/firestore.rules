@@ -1,0 +1,185 @@
+rules_version = '2';
+
+// Cloud Firestore Security Rules - Tour and Travel Booking Platform
+// Deny by default. Customers may only read/write their own data.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function uid() {
+      return request.auth.uid;
+    }
+
+    function userProfile() {
+      return get(/databases/$(database)/documents/users/$(uid())).data;
+    }
+
+    function userExists() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(uid()));
+    }
+
+    function isActiveUser() {
+      return userExists() && userProfile().accountStatus == 'active';
+    }
+
+    function isAdmin() {
+      return userExists()
+        && userProfile().role == 'admin'
+        && userProfile().accountStatus == 'active';
+    }
+
+    function onlyChanged(fields) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(fields);
+    }
+
+    // ------------------------------------------------------------------
+    // users - document id is the Firebase Auth UID
+    // ------------------------------------------------------------------
+    match /users/{userId} {
+      allow read: if isSignedIn() && (uid() == userId || isAdmin());
+
+      // Public registration always creates a customer account.
+      allow create: if isSignedIn() && uid() == userId
+        && request.resource.data.uid == userId
+        && request.resource.data.role == 'customer'
+        && request.resource.data.accountStatus == 'active'
+        && request.resource.data.keys().hasAll(
+             ['uid', 'fullName', 'email', 'phone', 'role', 'accountStatus', 'createdAt', 'updatedAt']
+           );
+
+      // Customers may edit their own profile but never their role or status.
+      allow update: if isAdmin()
+        || (uid() == userId
+            && request.resource.data.role == resource.data.role
+            && request.resource.data.accountStatus == resource.data.accountStatus
+            && request.resource.data.uid == resource.data.uid);
+
+      allow delete: if isAdmin();
+    }
+
+    // ------------------------------------------------------------------
+    // destinations - public read when published, admin write
+    // ------------------------------------------------------------------
+    match /destinations/{destinationId} {
+      allow read: if resource.data.isPublished == true || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // ------------------------------------------------------------------
+    // tourPackages - public read when published, admin write
+    // ------------------------------------------------------------------
+    match /tourPackages/{packageId} {
+      allow read: if resource.data.isPublished == true || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // ------------------------------------------------------------------
+    // departures - public schedule read; active customers may reserve or
+    // release seats (bookedCount) within capacity via the booking
+    // transaction. All other fields remain admin-only.
+    // ------------------------------------------------------------------
+    match /departures/{departureId} {
+      allow read: if true;
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+        || (isActiveUser()
+            && onlyChanged(['bookedCount', 'updatedAt'])
+            && request.resource.data.bookedCount is int
+            && request.resource.data.bookedCount >= 0
+            && request.resource.data.bookedCount <= resource.data.capacity);
+    }
+
+    // ------------------------------------------------------------------
+    // bookings - owners read their own; trusted status transitions only
+    // ------------------------------------------------------------------
+    match /bookings/{bookingId} {
+      allow read: if isSignedIn() && (resource.data.customerId == uid() || isAdmin());
+
+      allow create: if isActiveUser()
+        && request.resource.data.customerId == uid()
+        && request.resource.data.bookingStatus == 'pending'
+        && request.resource.data.paymentStatus == 'unpaid'
+        && request.resource.data.numberOfTravelers is int
+        && request.resource.data.numberOfTravelers >= 1
+        && request.resource.data.pricePerPerson is int
+        && request.resource.data.pricePerPerson >= 0
+        && request.resource.data.totalPrice ==
+             request.resource.data.pricePerPerson * request.resource.data.numberOfTravelers;
+
+      // Customers may only cancel their own pending/confirmed bookings.
+      allow update: if isAdmin()
+        || (isActiveUser()
+            && resource.data.customerId == uid()
+            && onlyChanged(['bookingStatus', 'statusHistory', 'updatedAt'])
+            && request.resource.data.bookingStatus == 'cancelled'
+            && resource.data.bookingStatus in ['pending', 'confirmed']);
+
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // payments - owners submit proof; admin verifies
+    // ------------------------------------------------------------------
+    match /payments/{paymentId} {
+      allow read: if isSignedIn() && (resource.data.customerId == uid() || isAdmin());
+
+      allow create: if isActiveUser()
+        && request.resource.data.customerId == uid()
+        && request.resource.data.paymentStatus == 'pending_verification'
+        && request.resource.data.amount is int
+        && request.resource.data.amount > 0;
+
+      allow update, delete: if isAdmin();
+    }
+
+    // ------------------------------------------------------------------
+    // notifications - owners read their own, may only toggle isRead
+    // ------------------------------------------------------------------
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && (resource.data.userId == uid() || isAdmin());
+
+      allow create: if isAdmin()
+        || (isActiveUser()
+            && request.resource.data.userId == uid()
+            && request.resource.data.type in ['booking_submitted', 'booking_cancelled']);
+
+      allow update: if isSignedIn() && resource.data.userId == uid()
+        && onlyChanged(['isRead']);
+
+      allow delete: if isAdmin() || (isSignedIn() && resource.data.userId == uid());
+    }
+
+    // ------------------------------------------------------------------
+    // promotions - public read of active promos, admin write
+    // ------------------------------------------------------------------
+    match /promotions/{promotionId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ------------------------------------------------------------------
+    // settings - public read (homepage content), admin write
+    // ------------------------------------------------------------------
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ------------------------------------------------------------------
+    // activityLogs - admin read, admin/client create (prefer Cloud
+    // Function with Admin SDK). Immutable: no updates or deletes.
+    // ------------------------------------------------------------------
+    match /activityLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin();
+      allow update, delete: if false;
+    }
+  }
+}
